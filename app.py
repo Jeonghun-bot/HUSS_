@@ -61,22 +61,22 @@ user_profile = {
 
 # 입력값으로 현재/결혼/출산 시나리오를 만들고 CSV 정책을 규칙 기반으로 매칭합니다.
 scenarios = build_life_event_scenarios(user_profile)
-matched_results = match_policies_for_scenarios(policies, scenarios, current_policies)
+matched_results = match_policies_for_scenarios(policies, scenarios, user_profile["current_policies"])
 benefit_summary = calculate_benefit_summary(matched_results)
 
 current_total = benefit_summary.loc[
     benefit_summary["시나리오"] == "현재 상태",
-    "월 환산 예상 혜택",
+    "예상 월 지원 효과",
 ].iloc[0]
-best_row = benefit_summary.sort_values("월 환산 예상 혜택", ascending=False).iloc[0]
+best_row = benefit_summary.sort_values("1년 기준 단순 합산 지원", ascending=False).iloc[0]
 
 st.subheader("1. 한 줄 진단")
 st.info(get_policy_diagnosis(benefit_summary, matched_results))
 
 metric_cols = st.columns(4)
 metric_cols[0].metric("분석 정책 수", f"{len(policies)}개")
-metric_cols[1].metric("현재 월 환산 혜택", f"{current_total:,.0f}원")
-metric_cols[2].metric("최대 월 환산 혜택", f"{best_row['월 환산 예상 혜택']:,.0f}원", best_row["시나리오"])
+metric_cols[1].metric("현재 예상 월 지원 효과", f"{current_total:,.0f}원")
+metric_cols[2].metric("최대 1년 기준 지원", f"{best_row['1년 기준 단순 합산 지원']:,.0f}원", best_row["시나리오"])
 metric_cols[3].metric("생성 시나리오", f"{len(scenarios)}개")
 
 st.subheader("2. 시나리오별 추천 정책 카드")
@@ -85,8 +85,9 @@ for scenario_name, result in matched_results.items():
     matched = result["policies"]
 
     with st.expander(f"{scenario_name} · {len(matched)}개 정책 매칭", expanded=scenario_name == "현재 상태"):
+        scenario_state = "미래 변화 시나리오" if scenario.get("is_future_change", True) else "현재 충족 상태"
         st.caption(
-            f"혼인 상태: {scenario['marital_status']} · 자녀 수: {scenario['child_count']}명 · "
+            f"{scenario_state} · 혼인 상태: {scenario['marital_status']} · 자녀 수: {scenario['child_count']}명 · "
             f"가구 월소득: {scenario['household_income']:,.0f}원 · 주거: {scenario['housing_type']} · "
             f"주택: {scenario['home_owner']}"
         )
@@ -101,6 +102,7 @@ for scenario_name, result in matched_results.items():
                 status_label = {
                     "recommended": "현재/미래 추천",
                     "new": "새롭게 추가 가능",
+                    "already_receiving": "이미 이용 중",
                     "duplicate": "이미 수급 또는 중복",
                     "needs_check": "확인 필요",
                 }.get(policy["match_status"], "확인 필요")
@@ -114,6 +116,8 @@ for scenario_name, result in matched_results.items():
 - 혜택: {policy["benefit_type"]} {policy["benefit_amount"]:,.0f}원
 - 기간: {int(policy["benefit_period_months"])}개월
 - 설명: {policy["description"]}
+- 안내: 실제 수급 여부와 금액은 소득, 재산, 이용 서비스, 중복 수급 가능 여부에 따라 달라질 수 있습니다.
+- 확인: 본 결과는 정책 탐색을 위한 참고용이며, 최종 신청 가능 여부는 공식 기관에서 확인해야 합니다.
 - 공식 사이트: {policy["official_site"]}
 """
                 )
@@ -141,16 +145,52 @@ if new_policy_rows:
 else:
     st.write("현재 입력값 기준으로 새롭게 추가되는 정책은 아직 없습니다.")
 
-st.subheader("4. 예상 월 혜택 또는 일회성 혜택 합계")
+st.subheader("4. 보수적 혜택 추정")
 summary_display = benefit_summary.copy()
-for column in ["월 환산 예상 혜택", "일회성 예상 혜택", "총 예상 혜택"]:
+summary_columns = [
+    "시나리오",
+    "예상 월 지원 효과",
+    "초기 일회성 지원",
+    "1년 기준 단순 합산 지원",
+    "확인 필요 정책 수",
+    "신규 정책 수",
+]
+for column in ["예상 월 지원 효과", "초기 일회성 지원", "1년 기준 단순 합산 지원"]:
     summary_display[column] = summary_display[column].map(lambda value: f"{value:,.0f}원")
-st.dataframe(summary_display, use_container_width=True, hide_index=True)
+st.dataframe(summary_display[summary_columns], use_container_width=True, hide_index=True)
+
+with st.expander("참고용 장기 누적액 보기"):
+    long_term_display = benefit_summary[["시나리오", "참고용 장기 누적액"]].copy()
+    long_term_display["참고용 장기 누적액"] = long_term_display["참고용 장기 누적액"].map(
+        lambda value: f"{value:,.0f}원"
+    )
+    st.caption("정책별 전체 지원기간을 단순 합산한 값입니다. 중복 수급 제한과 자격 변동은 반영하지 않습니다.")
+    st.dataframe(long_term_display, use_container_width=True, hide_index=True)
+
+st.subheader("4-1. 금액 확인 필요 정책")
+needs_check_rows = []
+for scenario_name, result in matched_results.items():
+    needs_check_policies = result["policies"][result["policies"]["match_status"] == "needs_check"]
+    for _, policy in needs_check_policies.iterrows():
+        needs_check_rows.append(
+            {
+                "시나리오": scenario_name,
+                "정책명": policy["policy_name"],
+                "분야": policy["category"],
+                "확인 사유": policy["check_reasons"],
+                "공식 사이트": policy["official_site"],
+            }
+        )
+
+if needs_check_rows:
+    st.dataframe(pd.DataFrame(needs_check_rows), use_container_width=True, hide_index=True)
+else:
+    st.write("현재 입력값 기준으로 금액 확인이 필요한 정책은 없습니다.")
 
 st.subheader("5. 정책 적용 전/후 금전 효과 비교")
 comparison_df = benefit_summary.melt(
     id_vars=["시나리오"],
-    value_vars=["정책 적용 전 기준값", "월 환산 예상 혜택", "정책 적용 후 효과"],
+    value_vars=["정책 적용 전 기준값", "예상 월 지원 효과", "정책 적용 후 효과"],
     var_name="구분",
     value_name="금액",
 )
@@ -160,7 +200,7 @@ comparison_fig = px.bar(
     y="금액",
     color="구분",
     barmode="group",
-    title="시나리오별 정책 적용 전/후 월 환산 효과",
+    title="시나리오별 정책 적용 전/후 예상 월 지원 효과",
 )
 st.plotly_chart(comparison_fig, use_container_width=True)
 
@@ -174,6 +214,9 @@ for order, (scenario_name, result) in enumerate(matched_results.items(), start=1
             "시나리오": scenario_name,
             "추천 정책 수": len(policies_for_scenario),
             "새롭게 추가 가능": int((policies_for_scenario["match_status"] == "new").sum())
+            if not policies_for_scenario.empty
+            else 0,
+            "이미 이용 중": int((policies_for_scenario["match_status"] == "already_receiving").sum())
             if not policies_for_scenario.empty
             else 0,
             "확인 필요": int((policies_for_scenario["match_status"] == "needs_check").sum())
