@@ -149,8 +149,12 @@ def run_case(profile: dict, policies: pd.DataFrame) -> list[tuple[str, str]]:
         summary[
             [
                 "시나리오",
-                "예상 월 지원 효과",
-                "초기 일회성 지원",
+                "현재 이용 중 혜택",
+                "신규 추천 월 혜택",
+                "추가 추천 반영 후",
+                "현재 이용 중 일회성 혜택",
+                "신규 추천 일회성 혜택",
+                "추천 반영 후 일회성 혜택",
                 "1년 기준 단순 합산 지원",
                 "참고용 장기 누적액",
                 "확인 필요 정책 수",
@@ -167,7 +171,24 @@ def run_case(profile: dict, policies: pd.DataFrame) -> list[tuple[str, str]]:
         counts = policies_df["match_status"].value_counts().to_dict() if not policies_df.empty else {}
         print(f"- {scenario_name}: {counts}")
         if not policies_df.empty:
-            show = policies_df[["policy_name", "match_status", "benefit_type", "benefit_amount", "check_reasons"]]
+            show = policies_df[
+                [
+                    "policy_name",
+                    "match_status",
+                    "benefit_type",
+                    "benefit_amount",
+                    "child_age_check",
+                    "timing_check",
+                    "included_in_existing_monthly_total",
+                    "included_in_existing_one_time_total",
+                    "included_in_new_monthly_total",
+                    "included_in_new_one_time_total",
+                    "included_in_after_monthly_total",
+                    "included_in_after_one_time_total",
+                    "included_in_yearly_total",
+                    "check_reasons",
+                ]
+            ]
             print(show.to_string(index=False, max_colwidth=70))
 
     print("\n제외 정책 예시:")
@@ -225,9 +246,132 @@ def check_case_invariants(profile: dict, policies: pd.DataFrame, scenarios: list
             if not no_home_policies.empty:
                 issues.append(("FAIL", f"{scenario_name}: 무주택 조건 정책이 {profile['home_owner']} 사용자에게 추천됨"))
 
+        current_immediate = df[
+            df["match_status"].eq("recommended")
+            & df["policy_name"].apply(_is_immediate_birth_policy)
+            & scenario_name.startswith("현재")
+        ]
+        if not current_immediate.empty:
+            issues.append(
+                (
+                    "FAIL",
+                    f"{scenario_name}: 출산 직후/신청기한 의존 정책이 현재 상태에서 recommended로 분류됨: "
+                    f"{current_immediate['policy_name'].tolist()}",
+                )
+            )
+
+        wrongly_included = df[
+            df["match_status"].isin(["needs_check", "already_receiving"])
+            & df["included_in_yearly_total"].astype(str).isin(["True", "true", "1"])
+        ]
+        if not wrongly_included.empty:
+            issues.append(("FAIL", f"{scenario_name}: 확인필요/이미이용 정책이 1년 합계에 포함됨"))
+
     if not issues:
         issues.append(("PASS", "핵심 불변조건 통과"))
+
+    if profile["case_id"] == "E":
+        issues.extend(check_case_e_already_receiving(matched_results))
+    if profile["case_id"] == "I":
+        issues.extend(check_case_i_existing_one_time(matched_results))
+    if profile["case_id"] == "J":
+        issues.extend(check_case_j_existing_needs_check(matched_results))
+
     return issues
+
+
+def check_case_e_already_receiving(matched_results: dict) -> list[tuple[str, str]]:
+    issues = []
+    current_df = matched_results["현재 상태"]["policies"]
+    target_names = {"부모급여", "아동수당"}
+    target_rows = current_df[current_df["policy_name"].isin(target_names)]
+
+    if len(target_rows) < 2:
+        issues.append(("FAIL", "E 케이스: 부모급여/아동수당이 현재 상태 매칭 결과에 없습니다."))
+        return issues
+
+    not_already = target_rows[~target_rows["match_status"].eq("already_receiving")]
+    if not not_already.empty:
+        issues.append(("FAIL", f"E 케이스: 현재 이용 정책이 already_receiving이 아님: {not_already['policy_name'].tolist()}"))
+
+    wrongly_included = target_rows[target_rows["included_in_yearly_total"].astype(str).isin(["True", "true", "1"])]
+    if not wrongly_included.empty:
+        issues.append(("FAIL", f"E 케이스: 이미 이용 중인 정책이 혜택 합계에 포함됨: {wrongly_included['policy_name'].tolist()}"))
+
+    already_count = int((current_df["match_status"] == "already_receiving").sum())
+    if already_count < 2:
+        issues.append(("FAIL", f"E 케이스: already_receiving_count가 2 미만입니다. actual={already_count}"))
+
+    recommendation_names = set(
+        current_df[current_df["match_status"].isin(["new", "recommended"])]["policy_name"].tolist()
+    )
+    overlap = target_names & recommendation_names
+    if overlap:
+        issues.append(("FAIL", f"E 케이스: 이미 이용 중인 정책이 신규 추천 목록에 남아 있음: {overlap}"))
+
+    current_summary = calculate_benefit_summary(matched_results).set_index("시나리오")
+    existing_monthly = int(current_summary.loc["현재 상태", "현재 이용 중 혜택"])
+    new_monthly = int(current_summary.loc["현재 상태", "신규 추천 월 혜택"])
+    after_monthly = int(current_summary.loc["현재 상태", "추가 추천 반영 후"])
+
+    if existing_monthly <= 0:
+        issues.append(("FAIL", f"E 케이스: 부모급여/아동수당 이미 이용 중인데 현재 이용 중 월 혜택이 0원입니다. actual={existing_monthly}"))
+
+    expected_existing = int(target_rows[target_rows["benefit_type"].isin(["월지급", "월환산"])]["benefit_amount"].sum())
+    if existing_monthly < expected_existing:
+        issues.append(("FAIL", f"E 케이스: 현재 이용 중 월 혜택이 선택 정책 금액보다 작습니다. expected_at_least={expected_existing}, actual={existing_monthly}"))
+
+    if after_monthly != existing_monthly + new_monthly:
+        issues.append(("FAIL", "E 케이스: 추천 반영 후 월 혜택이 현재 이용 중 월 혜택 + 신규 추천 월 혜택과 다릅니다."))
+
+    return issues
+
+
+def check_case_i_existing_one_time(matched_results: dict) -> list[tuple[str, str]]:
+    issues = []
+    current_df = matched_results["현재 상태"]["policies"]
+    row = current_df[current_df["policy_name"].eq("첫만남이용권 첫째아")]
+    if row.empty:
+        issues.append(("FAIL", "I 케이스: 첫만남이용권 첫째아가 현재 상태 매칭 결과에 없습니다."))
+        return issues
+    if row.iloc[0]["match_status"] != "already_receiving":
+        issues.append(("FAIL", "I 케이스: 첫만남이용권 첫째아가 already_receiving이 아닙니다."))
+
+    summary = calculate_benefit_summary(matched_results).set_index("시나리오")
+    existing_one_time = int(summary.loc["현재 상태", "현재 이용 중 일회성 혜택"])
+    new_one_time = int(summary.loc["현재 상태", "신규 추천 일회성 혜택"])
+    existing_monthly = int(summary.loc["현재 상태", "현재 이용 중 혜택"])
+
+    if existing_one_time <= 0:
+        issues.append(("FAIL", f"I 케이스: 이미 이용 중인 첫만남이용권이 현재 이용 중 일회성 혜택에 반영되지 않았습니다. actual={existing_one_time}"))
+    if new_one_time != 0:
+        issues.append(("FAIL", f"I 케이스: 이미 이용 중인 첫만남이용권이 신규 일회성 혜택에 포함된 것으로 보입니다. actual={new_one_time}"))
+    if existing_monthly != 0:
+        issues.append(("FAIL", f"I 케이스: 일회성 정책이 월 혜택 기준값에 포함되었습니다. actual={existing_monthly}"))
+    return issues
+
+
+def check_case_j_existing_needs_check(matched_results: dict) -> list[tuple[str, str]]:
+    issues = []
+    current_df = matched_results["현재 상태"]["policies"]
+    row = current_df[current_df["policy_name"].eq("서울시 신혼부부 임차보증금 이자지원")]
+    if row.empty:
+        issues.append(("FAIL", "J 케이스: 확인필요 이미 이용 정책이 현재 상태 매칭 결과에 없습니다."))
+        return issues
+    if row.iloc[0]["match_status"] != "already_receiving":
+        issues.append(("FAIL", "J 케이스: 확인필요 이미 이용 정책이 already_receiving이 아닙니다."))
+
+    summary = calculate_benefit_summary(matched_results).set_index("시나리오")
+    existing_monthly = int(summary.loc["현재 상태", "현재 이용 중 혜택"])
+    existing_one_time = int(summary.loc["현재 상태", "현재 이용 중 일회성 혜택"])
+    if existing_monthly != 0 or existing_one_time != 0:
+        issues.append(("FAIL", "J 케이스: benefit_type 확인필요 정책이 현재 수혜 기준 금액에 포함되었습니다."))
+    return issues
+
+
+def _is_immediate_birth_policy(policy_name: str) -> bool:
+    keywords = ["첫만남이용권", "임신출산 진료비", "산후조리", "출산지원금"]
+    return any(keyword in policy_name for keyword in keywords)
 
 
 def excluded_policy_rows(profile: dict, policies: pd.DataFrame, scenarios: list[dict]) -> list[dict]:

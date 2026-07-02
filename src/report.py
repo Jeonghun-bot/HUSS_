@@ -1,9 +1,13 @@
 def get_policy_diagnosis(benefit_summary, matched_results: dict) -> str:
     """상단에 보여줄 정책 시뮬레이션 한 줄 진단을 만듭니다."""
 
-    current_benefit = benefit_summary.loc[
+    current_existing_benefit = benefit_summary.loc[
         benefit_summary["시나리오"] == "현재 상태",
-        "예상 월 지원 효과",
+        "현재 이용 중 혜택",
+    ].iloc[0]
+    current_new_benefit = benefit_summary.loc[
+        benefit_summary["시나리오"] == "현재 상태",
+        "신규 추천 월 혜택",
     ].iloc[0]
     best_row = benefit_summary.sort_values("1년 기준 단순 합산 지원", ascending=False).iloc[0]
 
@@ -15,13 +19,15 @@ def get_policy_diagnosis(benefit_summary, matched_results: dict) -> str:
 
     if new_policy_count > 0:
         return (
-            f"현재 예상 월 지원 효과는 {current_benefit:,.0f}원이며, 생애변화 후 새롭게 검토할 수 있는 "
+            f"현재 이용 중 월 혜택은 {current_existing_benefit:,.0f}원, 신규 추천 월 혜택은 "
+            f"{current_new_benefit:,.0f}원이며, 생애변화 후 새롭게 검토할 수 있는 "
             f"정책은 {new_policy_count}개입니다. 1년 기준 단순 합산 지원 가능성이 가장 큰 시나리오는 "
             f"'{best_row['시나리오']}'입니다."
         )
 
     return (
-        f"현재 예상 월 지원 효과는 {current_benefit:,.0f}원이며, 입력한 미래 계획 기준으로는 "
+        f"현재 이용 중 월 혜택은 {current_existing_benefit:,.0f}원, 신규 추천 월 혜택은 "
+        f"{current_new_benefit:,.0f}원이며, 입력한 미래 계획 기준으로는 "
         "새롭게 추가되는 정책이 많지 않습니다. 소득, 주거, 자녀 수 조건을 다시 확인해보세요."
     )
 
@@ -57,7 +63,8 @@ def build_policy_summary_report(user_profile: dict, benefit_summary, matched_res
 현재 입력 조건은 {user_profile["region"]} 거주, {user_profile["marital_status"]}, 현재 자녀 수
 {user_profile["child_count"]}명, 가구 월소득 {user_profile["user_income"] + user_profile["partner_income"]:,.0f}원입니다.
 
-현재 상태에서 규칙 기반으로 계산된 예상 월 지원 효과는 **{current_row["예상 월 지원 효과"]:,.0f}원**입니다.
+현재 상태에서 이미 이용 중인 월 혜택은 **{current_row["현재 이용 중 혜택"]:,.0f}원**이고,
+신규 추천 월 혜택은 **{current_row["신규 추천 월 혜택"]:,.0f}원**입니다.
 미래 생애변화 시나리오 중에서는 **{best_row["시나리오"]}**에서 1년 기준 단순 합산 지원이
 **{best_row["1년 기준 단순 합산 지원"]:,.0f}원**으로 가장 크게 나타납니다.
 

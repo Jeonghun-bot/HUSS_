@@ -32,6 +32,15 @@ RESULT_COLUMNS = [
     "match_status",
     "match_reasons",
     "check_reasons",
+    "child_age_check",
+    "timing_check",
+    "included_in_yearly_total",
+    "included_in_existing_monthly_total",
+    "included_in_existing_one_time_total",
+    "included_in_new_monthly_total",
+    "included_in_new_one_time_total",
+    "included_in_after_monthly_total",
+    "included_in_after_one_time_total",
 ]
 
 
@@ -93,9 +102,23 @@ def match_policies(user_profile: dict, scenario: dict, policies_df: pd.DataFrame
         policy_dict["match_status"] = status
         policy_dict["match_reasons"] = "; ".join(evaluation["match_reasons"])
         policy_dict["check_reasons"] = "; ".join(evaluation["check_reasons"])
+        policy_dict["child_age_check"] = evaluation["child_age_check"]
+        policy_dict["timing_check"] = evaluation["timing_check"]
         rows.append(policy_dict)
 
-    return _build_result_frame(rows)
+    frame = _build_result_frame(rows)
+    frame["included_in_yearly_total"] = frame.apply(_is_included_in_yearly_total, axis=1)
+    frame["included_in_existing_monthly_total"] = frame.apply(_is_included_in_existing_monthly_total, axis=1)
+    frame["included_in_existing_one_time_total"] = frame.apply(_is_included_in_existing_one_time_total, axis=1)
+    frame["included_in_new_monthly_total"] = frame.apply(_is_included_in_new_monthly_total, axis=1)
+    frame["included_in_new_one_time_total"] = frame.apply(_is_included_in_new_one_time_total, axis=1)
+    frame["included_in_after_monthly_total"] = (
+        frame["included_in_existing_monthly_total"] | frame["included_in_new_monthly_total"]
+    )
+    frame["included_in_after_one_time_total"] = (
+        frame["included_in_existing_one_time_total"] | frame["included_in_new_one_time_total"]
+    )
+    return frame
 
 
 def match_policies_for_scenarios(
@@ -123,11 +146,19 @@ def match_policies_for_scenarios(
             "monthly_benefit_total": totals["monthly_benefit_total"],
             "one_time_benefit_total": totals["one_time_benefit_total"],
             "monthly_equivalent_total": totals["monthly_equivalent_total"],
+            "existing_monthly_benefit_total": totals["existing_monthly_benefit_total"],
+            "new_monthly_benefit_total": totals["new_monthly_benefit_total"],
+            "after_monthly_benefit_total": totals["after_monthly_benefit_total"],
+            "existing_one_time_benefit_total": totals["existing_one_time_benefit_total"],
+            "new_one_time_benefit_total": totals["new_one_time_benefit_total"],
+            "after_one_time_benefit_total": totals["after_one_time_benefit_total"],
             "one_year_benefit_total": totals["one_year_benefit_total"],
             "long_term_reference_total": totals["long_term_reference_total"],
             "total_benefit": totals["total_benefit"],
             "needs_check_count": int((matched_df["match_status"] == "needs_check").sum()),
             "new_policy_count": int((matched_df["match_status"] == "new").sum()),
+            "recommendable_policy_count": int(matched_df["match_status"].isin(["new", "recommended"]).sum()),
+            "already_receiving_count": int((matched_df["match_status"] == "already_receiving").sum()),
         }
 
     return results
@@ -139,27 +170,37 @@ def calculate_benefit_summary(matched_results: dict) -> pd.DataFrame:
     rows = []
 
     for scenario_name, result in matched_results.items():
-        monthly_total = int(result.get("monthly_benefit_total", 0))
-        one_time_total = int(result.get("one_time_benefit_total", 0))
-        monthly_equivalent_total = int(result.get("monthly_equivalent_total", 0))
+        existing_monthly_total = int(result.get("existing_monthly_benefit_total", 0))
+        new_monthly_total = int(result.get("new_monthly_benefit_total", 0))
+        after_monthly_total = int(result.get("after_monthly_benefit_total", 0))
+        existing_one_time_total = int(result.get("existing_one_time_benefit_total", 0))
+        new_one_time_total = int(result.get("new_one_time_benefit_total", 0))
+        after_one_time_total = int(result.get("after_one_time_benefit_total", 0))
         one_year_benefit_total = int(result.get("one_year_benefit_total", 0))
         long_term_reference_total = int(result.get("long_term_reference_total", 0))
-        total_benefit = int(result.get("total_benefit", 0))
-
         rows.append(
             {
                 "시나리오": scenario_name,
-                "정책 적용 전 기준값": 0,
-                "예상 월 지원 효과": monthly_total + monthly_equivalent_total,
-                "초기 일회성 지원": one_time_total,
+                "현재 이용 중 혜택": existing_monthly_total,
+                "신규 추천 월 혜택": new_monthly_total,
+                "추가 추천 반영 후": after_monthly_total,
+                "월 추가 효과": new_monthly_total,
+                "현재 이용 중 일회성 혜택": existing_one_time_total,
+                "신규 추천 일회성 혜택": new_one_time_total,
+                "추천 반영 후 일회성 혜택": after_one_time_total,
+                "일회성 추가 효과": new_one_time_total,
+                "예상 월 지원 효과": new_monthly_total,
+                "초기 일회성 지원": new_one_time_total,
                 "1년 기준 단순 합산 지원": one_year_benefit_total,
                 "참고용 장기 누적액": long_term_reference_total,
-                "월 환산 예상 혜택": monthly_total + monthly_equivalent_total,
-                "일회성 예상 혜택": one_time_total,
-                "정책 적용 후 효과": monthly_total + monthly_equivalent_total,
-                "총 예상 혜택": total_benefit,
+                "월 환산 예상 혜택": new_monthly_total,
+                "일회성 예상 혜택": new_one_time_total,
+                "정책 적용 전 기준값": existing_monthly_total,
+                "정책 적용 후 효과": after_monthly_total,
                 "확인 필요 정책 수": int(result.get("needs_check_count", 0)),
                 "신규 정책 수": int(result.get("new_policy_count", 0)),
+                "추천 가능 정책 수": int(result.get("recommendable_policy_count", 0)),
+                "이미 이용 중 정책 수": int(result.get("already_receiving_count", 0)),
             }
         )
 
@@ -172,6 +213,13 @@ def _evaluate_policy(policy: pd.Series, scenario: dict) -> dict:
     match_reasons = []
     check_reasons = []
 
+    employment_check = _check_text("고용 형태", policy["employment_type"], scenario["employment_type"])
+    if "육아휴직급여" in str(policy["policy_name"]) and scenario.get("employment_type") in ["프리랜서", "자영업"]:
+        employment_check = {
+            "status": "needs_check",
+            "reason": "프리랜서 또는 자영업자는 고용보험/근로자 요건 확인 필요",
+        }
+
     checks = [
         _check_life_event(policy["life_event"], scenario),
         _check_text("지역", policy["region"], scenario["region"]),
@@ -181,7 +229,7 @@ def _evaluate_policy(policy: pd.Series, scenario: dict) -> dict:
         _check_range("가구 월소득", scenario["household_income"], policy["min_income"], policy["max_income"]),
         _check_text("주거 형태", policy["housing_type"], scenario["housing_type"]),
         _check_text("주택 보유", policy["home_owner"], scenario["home_owner"]),
-        _check_text("고용 형태", policy["employment_type"], scenario["employment_type"]),
+        employment_check,
     ]
 
     for check in checks:
@@ -199,6 +247,14 @@ def _evaluate_policy(policy: pd.Series, scenario: dict) -> dict:
     if str(policy["benefit_type"]).strip() == "확인필요":
         check_reasons.append("혜택 금액이 조건별로 달라 공식 사이트 확인 필요")
 
+    child_age_check = _check_child_age_policy(policy, scenario)
+    timing_check = _check_current_timing_policy(policy, scenario)
+    for extra_check in [child_age_check, timing_check]:
+        if extra_check["status"] == "needs_check":
+            check_reasons.append(extra_check["reason"])
+        elif extra_check["status"] == "pass" and extra_check["reason"]:
+            match_reasons.append(extra_check["reason"])
+
     if check_reasons:
         status = "needs_check"
     else:
@@ -208,6 +264,8 @@ def _evaluate_policy(policy: pd.Series, scenario: dict) -> dict:
         "match_status": status,
         "match_reasons": match_reasons,
         "check_reasons": check_reasons,
+        "child_age_check": child_age_check["reason"],
+        "timing_check": timing_check["reason"],
     }
 
 
@@ -219,22 +277,40 @@ def _calculate_totals(policies: pd.DataFrame) -> dict:
             "monthly_benefit_total": 0,
             "one_time_benefit_total": 0,
             "monthly_equivalent_total": 0,
+            "existing_monthly_benefit_total": 0,
+            "new_monthly_benefit_total": 0,
+            "after_monthly_benefit_total": 0,
+            "existing_one_time_benefit_total": 0,
+            "new_one_time_benefit_total": 0,
+            "after_one_time_benefit_total": 0,
             "one_year_benefit_total": 0,
             "long_term_reference_total": 0,
             "total_benefit": 0,
         }
 
-    eligible = policies[
+    new_eligible = policies[
         policies["match_status"].isin(["recommended", "new"])
         & policies["benefit_type"].isin(["월지급", "일회성", "월환산"])
     ].copy()
-    monthly = eligible[eligible["benefit_type"] == "월지급"]
-    monthly_equivalent = eligible[eligible["benefit_type"] == "월환산"]
-    one_time = eligible[eligible["benefit_type"] == "일회성"]
+    existing_eligible = policies[
+        policies["match_status"].eq("already_receiving")
+        & policies["benefit_type"].isin(["월지급", "일회성", "월환산"])
+    ].copy()
+
+    monthly = new_eligible[new_eligible["benefit_type"] == "월지급"]
+    monthly_equivalent = new_eligible[new_eligible["benefit_type"] == "월환산"]
+    one_time = new_eligible[new_eligible["benefit_type"] == "일회성"]
+    existing_monthly = existing_eligible[existing_eligible["benefit_type"].isin(["월지급", "월환산"])]
+    existing_one_time = existing_eligible[existing_eligible["benefit_type"] == "일회성"]
 
     monthly_total = int(monthly["benefit_amount"].sum())
     monthly_equivalent_total = int(monthly_equivalent["benefit_amount"].sum())
     one_time_total = int(one_time["benefit_amount"].sum())
+    new_monthly_total = monthly_total + monthly_equivalent_total
+    existing_monthly_total = int(existing_monthly["benefit_amount"].sum())
+    existing_one_time_total = int(existing_one_time["benefit_amount"].sum())
+    after_monthly_total = existing_monthly_total + new_monthly_total
+    after_one_time_total = existing_one_time_total + one_time_total
 
     one_year_recurring_total = (
         (monthly["benefit_amount"] * monthly["benefit_period_months"].clip(upper=12)).sum()
@@ -256,6 +332,12 @@ def _calculate_totals(policies: pd.DataFrame) -> dict:
         "monthly_benefit_total": monthly_total,
         "one_time_benefit_total": one_time_total,
         "monthly_equivalent_total": monthly_equivalent_total,
+        "existing_monthly_benefit_total": existing_monthly_total,
+        "new_monthly_benefit_total": new_monthly_total,
+        "after_monthly_benefit_total": after_monthly_total,
+        "existing_one_time_benefit_total": existing_one_time_total,
+        "new_one_time_benefit_total": one_time_total,
+        "after_one_time_benefit_total": after_one_time_total,
         "one_year_benefit_total": one_year_benefit_total,
         "long_term_reference_total": long_term_reference_total,
         "total_benefit": one_year_benefit_total,
@@ -273,6 +355,81 @@ def _build_result_frame(rows: list[dict]) -> pd.DataFrame:
         if column not in frame.columns:
             frame[column] = ""
     return frame[RESULT_COLUMNS]
+
+
+def _is_included_in_yearly_total(policy) -> bool:
+    return (
+        policy.get("match_status") in ["recommended", "new"]
+        and policy.get("benefit_type") in ["월지급", "일회성", "월환산"]
+    )
+
+
+def _is_included_in_existing_monthly_total(policy) -> bool:
+    return policy.get("match_status") == "already_receiving" and policy.get("benefit_type") in ["월지급", "월환산"]
+
+
+def _is_included_in_existing_one_time_total(policy) -> bool:
+    return policy.get("match_status") == "already_receiving" and policy.get("benefit_type") == "일회성"
+
+
+def _is_included_in_new_monthly_total(policy) -> bool:
+    return policy.get("match_status") in ["recommended", "new"] and policy.get("benefit_type") in ["월지급", "월환산"]
+
+
+def _is_included_in_new_one_time_total(policy) -> bool:
+    return policy.get("match_status") in ["recommended", "new"] and policy.get("benefit_type") == "일회성"
+
+
+def _check_child_age_policy(policy: pd.Series, scenario: dict) -> dict:
+    """현재 상태의 양육성 월지급 정책을 자녀 나이 기준으로 보수적으로 점검합니다."""
+
+    if scenario.get("is_future_change", True):
+        return {"status": "pass", "reason": "자녀 나이: 미래 출산 직후 가정"}
+
+    policy_name = str(policy["policy_name"])
+    child_age = scenario.get("youngest_child_age") or scenario.get("child_age") or "해당 없음"
+
+    if "부모급여" in policy_name:
+        if child_age in ["0세", "1세"]:
+            return {"status": "pass", "reason": f"자녀 나이: {child_age} 부모급여 후보"}
+        return {
+            "status": "needs_check",
+            "reason": "자녀 나이에 따라 부모급여 수급 가능 여부 확인 필요",
+        }
+
+    if "아동수당" in policy_name:
+        if child_age in ["0세", "1세", "2세", "3세 이상"]:
+            return {"status": "pass", "reason": "아동수당은 정확한 만 나이 기준 확인 필요"}
+        return {"status": "needs_check", "reason": "자녀 나이에 따라 아동수당 수급 가능 여부 확인 필요"}
+
+    if "가정양육수당" in policy_name or "보육료" in policy_name:
+        return {
+            "status": "needs_check",
+            "reason": "어린이집 이용 여부 등 추가 조건 확인 필요",
+        }
+
+    return {"status": "pass", "reason": ""}
+
+
+def _check_current_timing_policy(policy: pd.Series, scenario: dict) -> dict:
+    """현재 상태에서 이미 지나갔을 수 있는 출산 직후성 정책은 확인 후보로 둡니다."""
+
+    if scenario.get("is_future_change", True):
+        return {"status": "pass", "reason": "신청 시점: 미래 출산 직후 가정"}
+
+    policy_name = str(policy["policy_name"])
+    life_event = str(policy["life_event"])
+    immediate_keywords = ["첫만남이용권", "임신출산 진료비", "산후조리", "출산지원금"]
+
+    if life_event in ["첫째 출산", "둘째 출산"] and any(keyword in policy_name for keyword in immediate_keywords):
+        return {
+            "status": "needs_check",
+            "reason": "현재 상태에서 이미 발생한 출산 이벤트일 수 있어 신청 가능 기간 확인 필요",
+        }
+
+    return {"status": "pass", "reason": ""}
+
+
 
 
 def _check_text(label: str, policy_value: str, user_value: str) -> dict:
